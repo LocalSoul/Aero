@@ -2047,11 +2047,17 @@ durchgehenden Supervision.
 **Entscheidung.** Der Pump-Thread wird **zustandsbehaftet im `TickDriver`-Objekt
 gehalten** (Zähler + `thread`-Feld), `ensureRunning()` startet ihn bei Bedarf neu.
 Ein zweiter Daemon-Thread (Watchdog, 1 Hz) prüft Liveness **und** Stall
-(`lastTickAtNanos` älter als `5 × interval` → Stall zählen, Zeitstempel
-zurücksetzen, damit der Driver weiterläuft) und ruft `ensureRunning()` auf.
-Beide Threads schlafen 99 % der Zeit. Bewusst *kein* Actor über dem Thread: die
-Supervision eines Threads durch einen Actor wäre mehr Infrastruktur als der
-Thread selbst. Sichtbar über `restarts()` und `stalls()`.
+(`lastTickAtNanos` älter als `5 × interval` → Stall zählen) und ruft
+`ensureRunning()` auf. **Präzisierung:** Bei einem *lebenden, aber hängenden*
+Pump-Thread (Fremd-Lock, blockierter Subscriber) wird der Zeitstempel bewusst
+**nicht** zurückgesetzt — `stalls()` zählt dann jede Watchdog-Periode mit
+Überschreitung weiter hoch und bleibt so ein ehrliches Maß für „seit X Sekunden
+hängt der Driver", statt nach einem Log zu verstummen. Das Log ist dagegen auf
+einmal pro Stall-Episode gedrosselt. Der Zeitstempel wird nur vom nächsten echten
+Tick bzw. von `ensureRunning()` (Neustart) aktualisiert. Beide Threads schlafen
+99 % der Zeit. Bewusst *kein* Actor über dem Thread: die Supervision eines
+Threads durch einen Actor wäre mehr Infrastruktur als der Thread selbst.
+Sichtbar über `restarts()` und `stalls()`.
 
 **Nicht abgedeckt:** Ein Driver, der *lebt* und regelmäßig falsche Ticks
 liefert (Logik-Bug) — dafür ist ein Assert im Spielcode zuständig, nicht die

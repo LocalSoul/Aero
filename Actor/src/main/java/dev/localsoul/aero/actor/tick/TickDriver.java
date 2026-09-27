@@ -61,6 +61,9 @@ public final class TickDriver implements AutoCloseable {
     private volatile Thread watchdog;
     private volatile BiConsumer<ActorRef, Throwable> onSubscriberError = (room, error) -> { };
 
+    /** Watchdog-lokal: ob die laufende Stall-Episode schon geloggt wurde. */
+    private boolean stallReported;
+
     private static final System.Logger LOG = System.getLogger(TickDriver.class.getName());
 
     // ------------------------------------------------------------------ Bau
@@ -221,17 +224,26 @@ public final class TickDriver implements AutoCloseable {
         Thread t = thread;
         boolean dead = t == null || !t.isAlive();
         if (age <= stallThresholdNanos && !dead) {
+            stallReported = false;                       // wieder im Takt
             return;
         }
+        // Jede Pruefung mit Ueberschreitung zaehlt — auch wenn der Thread lebt.
+        // lastTickAtNanos wird hier bewusst NICHT zurueckgesetzt: ein lebender,
+        // aber haengender Pump-Thread (Fremd-Lock, blockierter Subscriber)
+        // erzeugt so weiterhin einen stalls()-Eintrag pro Watchdog-Periode,
+        // statt nach dem ersten Log fuer immer als "ok" zu gelten. Der Zaehler
+        // ist damit ein ehrliches Mass fuer "seit X Sekunden haengt der Driver".
         stalls.incrementAndGet();
-        lastTickAtNanos.set(System.nanoTime());          // Watchdog uebernimmt
         if (dead) {
             LOG.log(System.Logger.Level.WARNING, "tick pump thread is dead — restarting");
-            ensureRunning();
-        } else {
+            ensureRunning();                             // setzt lastTickAtNanos selbst zurueck
+            stallReported = false;
+        } else if (!stallReported) {
+            // Log gedrosselt (einmal je Episode), der Zaehler bleibt ehrlich.
             LOG.log(System.Logger.Level.WARNING,
                     "tick driver alive but no tick for {0}ms — likely stuck in deliver()",
                     age / 1_000_000L);
+            stallReported = true;
         }
     }
 
@@ -253,6 +265,11 @@ public final class TickDriver implements AutoCloseable {
 
     public boolean isClosed() {
         return closed;
+    }
+
+    /** Der Pump-Thread (Diagnose: {@code thread().isAlive()} + {@link #tickCount()}). */
+    public Thread thread() {
+        return thread;
     }
 
     // ------------------------------------------------------------------ Zaehler

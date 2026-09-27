@@ -15,6 +15,7 @@ import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.LockSupport;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -285,6 +286,35 @@ class TickDriverTest {
 
         awaitUntil(() -> d.stalls() > 0, "Watchdog meldet Stillstand");
         assertThat(d.isRunning()).as("der Driver laeuft weiter").isTrue();
+    }
+
+    @Test
+    @DisplayName("ein lebender, aber haengender Pump-Thread erhoeht stalls() weiter — ehrlicher Zaehler")
+    void aliveButStuckPumpKeepsCountingStalls() throws Exception {
+        CountDownLatchHarness stuck = new CountDownLatchHarness(1);
+        TestRefs.FakeRef blocking = new TestRefs.FakeRef("blocking").onMessage(message -> {
+            stuck.countDown();
+            LockSupport.park();                       // dauerhaft blockieren, Thread lebt
+        });
+        // stallThreshold 2,5 s: die erste Ueberschreitung kommt nach ~2,5 s.
+        driver = new TickDriver(FAST, OverrunPolicy.CLAMP, 0, Duration.ofMillis(2500).toNanos());
+        driver.subscribe(blocking);
+        driver.start();
+
+        assertThat(stuck.await(5, TimeUnit.SECONDS)).as("Pump steckt im Subscriber").isTrue();
+        awaitUntil(() -> driver.stalls() >= 1, "erster Stall");
+
+        assertThat(driver.thread()).isNotNull();
+        assertThat(driver.thread().isAlive()).as("Thread lebt, haengt aber").isTrue();
+        assertThat(driver.restarts()).as("kein Restart bei lebendem Thread").isZero();
+
+        long s0 = driver.stalls();
+        Thread.sleep(3500);                           // ~3 Watchdog-Perioden
+        // Der Zaehler laeuft mit der Haltedauer weiter (pro Periode) statt nach
+        // dem ersten Log zu verstummen — der alte Reset haette hier nur ~1
+        // weiteren Eintrag geliefert.
+        assertThat(driver.stalls()).as("stalls() waechst weiter")
+                .isGreaterThanOrEqualTo(s0 + 2);
     }
 
     @Test
