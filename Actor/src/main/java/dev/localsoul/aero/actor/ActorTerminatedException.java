@@ -1,11 +1,14 @@
 package dev.localsoul.aero.actor;
 
+import java.io.Serial;
+
 /**
  * Ein angefragter Actor ist gestorben, bevor er antworten konnte. Der
  * {@link ExitReason} im Payload sagt, warum.
  */
 public class ActorTerminatedException extends RuntimeException {
 
+    @Serial
     private static final long serialVersionUID = 1L;
 
     private final transient ExitReason reason;

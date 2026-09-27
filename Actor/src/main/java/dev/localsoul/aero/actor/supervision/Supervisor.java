@@ -108,6 +108,7 @@ public class Supervisor extends Actor implements ChildOwner {
         );
     }
 
+    @SuppressWarnings("AutoCloseableResource")   // ActorSystem wird vom Aufrufer verwaltet
     private void startChild(ActorContext ctx, ChildSpec childSpec) {
         String name = childSpec.id();
         startOrder++;
@@ -136,7 +137,7 @@ public class Supervisor extends Actor implements ChildOwner {
 
         // 2. Absichtlicher Stopp eines nicht-permanenten Kindes beendet den
         //    Supervisor (BEAM: ein shutdown-Kind beendet seinen Vater).
-        if (reason == ExitReason.shutdown() && !entry.spec().permanent()) {
+        if (reason instanceof ExitReason.Shutdown && !entry.spec().permanent()) {
             children.remove(entry.name(), entry);
             return Behavior.HALT;                 // Zelle uebernimmt den Grund
         }
@@ -191,6 +192,7 @@ public class Supervisor extends Actor implements ChildOwner {
      * {@code remove} und {@code put} eine leere Kindliste und haelt ein
      * {@code child(id)}-Ergebnis von {@code null} fuer "Kind weg".
      */
+    @SuppressWarnings("AutoCloseableResource")   // ActorSystem wird vom Aufrufer verwaltet
     private void restart(ActorContext ctx, Child child) {
         children.compute(child.name(), (id, current) -> {
             if (current != child) {
@@ -318,7 +320,7 @@ public class Supervisor extends Actor implements ChildOwner {
     protected void onStop(ActorContext ctx, ExitReason reason) {
         for (Child child : children.values()) {
             ActorCell.cellOf(child.ref())
-                    .stop(reason == ExitReason.normal() ? ExitReason.normal() : reason);
+                    .stop(reason instanceof ExitReason.Normal ? ExitReason.normal() : reason);
         }
     }
 

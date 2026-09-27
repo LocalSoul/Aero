@@ -102,6 +102,7 @@ public abstract class Actor {
      * also keine Race. Damit kann eine Basisklasse (z. B. ein Supervisor) sich
      * selbst Nachrichten schicken, ohne die Referenz durchzureichen.
      */
+    @SuppressWarnings("AutoCloseableResource")   // ActorSystem wird vom Aufrufer verwaltet
     protected final ActorRef selfRef() {
         ActorRef ref = context().system().whereis(name()).orElse(null);
         if (ref == null) {

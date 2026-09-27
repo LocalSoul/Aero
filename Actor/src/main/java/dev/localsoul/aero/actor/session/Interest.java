@@ -27,7 +27,8 @@ public record Interest(double x, double y, double z, double radius) {
     public static final Interest UNBOUNDED = new Interest(0, 0, 0, Double.MAX_VALUE);
 
     public Interest {
-        if (!(radius >= 0) || Double.isNaN(radius)) {
+        // Hinweis: NaN erfuellt `!(radius >= 0)`, ein separater NaN-Check ist ueberfluessig.
+        if (!(radius >= 0)) {
             throw new IllegalArgumentException("radius must be >= 0, was " + radius);
         }
         if (Double.isNaN(x) || Double.isNaN(y) || Double.isNaN(z)) {

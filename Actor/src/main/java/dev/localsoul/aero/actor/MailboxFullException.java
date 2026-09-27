@@ -1,5 +1,7 @@
 package dev.localsoul.aero.actor;
 
+import java.io.Serial;
+
 /**
  * Das Postfach des Ziel-Actors war voll (Policy {@link MailboxOverflow#FAIL}) —
  * der typische Fall eines haengenden Clients. Gehoert in einen Spielserver
@@ -13,6 +15,7 @@ package dev.localsoul.aero.actor;
  */
 public class MailboxFullException extends RuntimeException {
 
+    @Serial
     private static final long serialVersionUID = 1L;
 
     private final transient ActorRef target;

@@ -9,6 +9,8 @@ import dev.localsoul.aero.actor.Receive;
 import dev.localsoul.aero.actor.Receive.Clause;
 import dev.localsoul.aero.actor.tick.OutboundBuffer.Outbound;
 
+import java.util.concurrent.atomic.AtomicLong;
+
 /**
  * Ein Actor pro Client: die Bruecke zwischen Netzwerk und Framework.
  *
@@ -36,8 +38,8 @@ public abstract class Session extends Actor {
     private final Client client;
     private volatile Interest interest;
     private volatile Subscription interestSubscription;
-    private volatile long sent;
-    private volatile long received;
+    private final AtomicLong sent = new AtomicLong();
+    private final AtomicLong received = new AtomicLong();
 
     protected Session(String name, Client client) {
         this(name, client, Interest.UNBOUNDED);
@@ -65,12 +67,12 @@ public abstract class Session extends Actor {
 
     /** Anzahl an den Client gesendeter {@code send}-Aufrufe. */
     public long packetsSent() {
-        return sent;
+        return sent.get();
     }
 
     /** Anzahl eingehender Nachrichten. */
     public long messagesReceived() {
-        return received;
+        return received.get();
     }
 
     // ------------------------------------------------------------------ Interest
@@ -153,12 +155,12 @@ public abstract class Session extends Actor {
      */
     private Behavior deliver(Outbound outbound, ActorContext ctx) {
         client.send(outbound.payload());
-        sent++;
+        sent.incrementAndGet();
         return Behavior.NEXT;
     }
 
     private Behavior handleInbound(Object message, ActorContext ctx) {
-        received++;
+        received.incrementAndGet();
         return onInbound(ctx, message);
     }
 

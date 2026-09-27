@@ -2,9 +2,12 @@ package dev.localsoul.aero.actor.supervision;
 
 import dev.localsoul.aero.actor.ExitReason;
 
+import java.io.Serial;
+
 /** Der Fehler eines Kindes liess sich nicht beheben — der Supervisor gibt auf. */
 public class EscalationException extends RuntimeException {
 
+    @Serial
     private static final long serialVersionUID = 1L;
 
     private final int restarts;

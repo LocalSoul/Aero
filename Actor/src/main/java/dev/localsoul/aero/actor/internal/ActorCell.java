@@ -44,7 +44,7 @@ import java.util.function.BiConsumer;
  * (Antworten laufender {@code ask}s) kommen weiter durch, sonst verliesse ein
  * Actor waehrend des Drains seine eigenen Antworten.
  */
-public final class ActorCell implements ActorContext, AutoCloseable {
+public final class ActorCell implements ActorContext {
 
     private static final int RUNNING = 0;
     private static final int STOPPING = 1;
@@ -336,7 +336,6 @@ public final class ActorCell implements ActorContext, AutoCloseable {
         }
     }
 
-    @Override
     public void close() {
         stop();
         Thread t = thread;
