@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Request>
+    <Packages>
+        <Package id="1">
+            <Name>Welcome Package</Name>
+            <Price>499</Price>
+            <Quantity>1</Quantity>
+            <MaxPurchase>1</MaxPurchase>
+            <Weight>0</Weight>
+            <EndDate>2027-01-01T00:00:00</EndDate>
+            <BgURL>http://localhost:8080/packages/welcome.png</BgURL>
+        </Package>
+        <Package id="2">
+            <Name>Starter Pack</Name>
+            <Price>199</Price>
+            <Quantity>1</Quantity>
+            <MaxPurchase>5</MaxPurchase>
+            <Weight>0</Weight>
+            <EndDate>2027-01-01T00:00:00</EndDate>
+            <BgURL>http://localhost:8080/packages/starter.png</BgURL>
+        </Package>
+    </Packages>
+    <History>
+        <Package id="1">
+            <Count>1</Count>
+        </Package>
+    </History>
+</Request>

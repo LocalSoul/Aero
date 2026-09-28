@@ -39,3 +39,6 @@ build/
 .DS_Store
 
 .idea
+
+### RotMG-Client (separates Repo, nur lokal zur Referenz) ###
+/RotMG_Client_27.7.X2/

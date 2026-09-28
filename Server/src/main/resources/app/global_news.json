@@ -1,0 +1,24 @@
+[
+    {
+        "title": "Welcome to Aero",
+        "image": "http://localhost:8080/news/welcome.png",
+        "linkDetail": "http://localhost:8080",
+        "startTime": 1700000000000,
+        "endTime": 1767225599000,
+        "linkType": 1,
+        "platform": "rotmg,kabam",
+        "priority": 0,
+        "slot": 0
+    },
+    {
+        "title": "Starter Event",
+        "image": "http://localhost:8080/news/event.png",
+        "linkDetail": "http://localhost:8080",
+        "startTime": 1700000000000,
+        "endTime": 1767225599000,
+        "linkType": 1,
+        "platform": "rotmg,kabam",
+        "priority": 1,
+        "slot": 1
+    }
+]

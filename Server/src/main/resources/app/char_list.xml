@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Chars nextCharId="2" maxNumChars="8">
+    <Account>
+        <AccountId>123456</AccountId>
+        <Name>PlayerOne</Name>
+        <NameChosen/>
+        <Credits>1000</Credits>
+        <FortuneToken>0</FortuneToken>
+        <NextCharSlotPrice>1200</NextCharSlotPrice>
+        <IsAgeVerified>1</IsAgeVerified>
+        <Stats>
+            <TotalFame>1500</TotalFame>
+            <Fame>123</Fame>
+            <ClassStats objectType="782">
+                <BestLevel>20</BestLevel>
+                <BestFame>456</BestFame>
+            </ClassStats>
+            <ClassStats objectType="784">
+                <BestLevel>12</BestLevel>
+                <BestFame>200</BestFame>
+            </ClassStats>
+        </Stats>
+        <Guild>
+            <Name>LocalSoul</Name>
+            <Rank>0</Rank>
+        </Guild>
+    </Account>
+
+    <Char id="1">
+        <ObjectType>782</ObjectType>
+        <Texture>0</Texture>
+        <Level>20</Level>
+        <Tex1>0</Tex1>
+        <Tex2>0</Tex2>
+        <Exp>11200</Exp>
+        <CurrentFame>456</CurrentFame>
+    </Char>
+
+    <News>
+        <Item>
+            <Icon>rotmg</Icon>
+            <Title>Welcome to Aero</Title>
+            <TagLine>Private Server 27.7.X2</TagLine>
+            <Link>http://localhost:8080</Link>
+            <Date>1700000000</Date>
+        </Item>
+    </News>
+
+    <ClassAvailabilityList>
+        <ClassAvailability id="782">unrestricted</ClassAvailability>
+        <ClassAvailability id="784">unrestricted</ClassAvailability>
+    </ClassAvailabilityList>
+
+    <OwnedSkins>0</OwnedSkins>
+
+    <MaxClassLevelList>
+        <MaxClassLevel classType="782" maxLevel="20"/>
+        <MaxClassLevel classType="784" maxLevel="12"/>
+    </MaxClassLevelList>
+
+    <ItemCosts>
+        <ItemCost type="0" expires="0" purchasable="1">0</ItemCost>
+    </ItemCosts>
+
+    <Lat>37.4436</Lat>
+    <Long>-122.412</Long>
+    <SalesForce>unavailable</SalesForce>
+</Chars>
