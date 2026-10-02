@@ -8,6 +8,7 @@ import dev.localsoul.aero.actor.Receive;
 import dev.localsoul.aero.actor.Receive.Clause;
 import dev.localsoul.aero.game.actor.GameMessages.BackpressureKick;
 import dev.localsoul.aero.game.actor.GameMessages.ChannelClosed;
+import dev.localsoul.aero.game.actor.GameMessages.EnemyHitMsg;
 import dev.localsoul.aero.game.actor.GameMessages.JoinConfirmed;
 import dev.localsoul.aero.game.actor.GameMessages.KickConfirmed;
 import dev.localsoul.aero.game.actor.GameMessages.KickPlayer;
@@ -18,13 +19,18 @@ import dev.localsoul.aero.game.actor.GameMessages.PlayerHello;
 import dev.localsoul.aero.game.actor.GameMessages.PlayerJoin;
 import dev.localsoul.aero.game.actor.GameMessages.PlayerLeave;
 import dev.localsoul.aero.game.actor.GameMessages.PlayerMove;
+import dev.localsoul.aero.game.actor.GameMessages.PlayerShootMsg;
+import dev.localsoul.aero.game.actor.GameMessages.PlayerTextMsg;
 import dev.localsoul.aero.game.net.NettyClient;
 import dev.localsoul.aero.game.protocol.Create;
+import dev.localsoul.aero.game.protocol.EnemyHit;
 import dev.localsoul.aero.game.protocol.Escape;
 import dev.localsoul.aero.game.protocol.Hello;
 import dev.localsoul.aero.game.protocol.Load;
 import dev.localsoul.aero.game.protocol.Move;
 import dev.localsoul.aero.game.protocol.OutgoingMessage;
+import dev.localsoul.aero.game.protocol.PlayerShoot;
+import dev.localsoul.aero.game.protocol.PlayerText;
 
 /**
  * Eine Netty-Verbindung als Actor (§7 der gameserver_implement.md). Reiner
@@ -51,6 +57,9 @@ public final class SessionActor extends Actor {
                 Clause.on(Load.class, this::onLoad),
                 Clause.on(Create.class, this::onCreate),
                 Clause.on(Move.class, this::onMove),
+                Clause.on(PlayerShoot.class, this::onPlayerShoot),
+                Clause.on(EnemyHit.class, this::onEnemyHit),
+                Clause.on(PlayerText.class, this::onPlayerText),
                 Clause.on(Escape.class, this::onEscape),
                 Clause.on(MapInfoReady.class, (msg, c) -> {
                     client.send(msg.mapInfo());
@@ -120,6 +129,31 @@ public final class SessionActor extends Actor {
             return Behavior.NEXT;                   // vor dem Join: ignorieren
         }
         ctx.tell(realm, new PlayerMove(objectId, move.newPosition.x, move.newPosition.y));
+        return Behavior.NEXT;
+    }
+
+    private Behavior onPlayerShoot(final PlayerShoot shoot, final ActorContext ctx) {
+        if (objectId < 0) {
+            return Behavior.NEXT;
+        }
+        ctx.tell(realm, new PlayerShootMsg(objectId, shoot.time, shoot.bulletId,
+                shoot.containerType, shoot.startingPos.x, shoot.startingPos.y, shoot.angle));
+        return Behavior.NEXT;
+    }
+
+    private Behavior onEnemyHit(final EnemyHit hit, final ActorContext ctx) {
+        if (objectId < 0) {
+            return Behavior.NEXT;
+        }
+        ctx.tell(realm, new EnemyHitMsg(objectId, hit.time, hit.bulletId, hit.targetId, hit.kill));
+        return Behavior.NEXT;
+    }
+
+    private Behavior onPlayerText(final PlayerText text, final ActorContext ctx) {
+        if (objectId < 0) {
+            return Behavior.NEXT;
+        }
+        ctx.tell(realm, new PlayerTextMsg(objectId, text.text));
         return Behavior.NEXT;
     }
 

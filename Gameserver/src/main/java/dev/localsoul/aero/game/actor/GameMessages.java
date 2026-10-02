@@ -36,6 +36,19 @@ public final class GameMessages {
     public record PlayerMove(int objectId, float x, float y) {
     }
 
+    /** Schuss-Eingabe: Client hat {@code PlayerShoot} gesendet. */
+    public record PlayerShootMsg(int objectId, int time, int bulletId, int containerType,
+                                 float x, float y, float angle) {
+    }
+
+    /** Treffer-Meldung: Client-Projektil hat ein Monster getroffen. */
+    public record EnemyHitMsg(int objectId, int time, int bulletId, int targetId, boolean kill) {
+    }
+
+    /** Chattext (nur {@code /give} wird in V2 ausgewertet). */
+    public record PlayerTextMsg(int objectId, String text) {
+    }
+
     /** Externer Disconnect (channelInactive) — Spieler aus der Welt. */
     public record PlayerLeave(int objectId) {
     }

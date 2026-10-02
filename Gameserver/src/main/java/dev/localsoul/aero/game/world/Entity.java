@@ -43,4 +43,13 @@ public class Entity {
     /** Pro Tick vom Realm-Thread aufgerufen (reine Objekt-Iteration). */
     public void simulate(final float dt) {
     }
+
+    /**
+     * Rüstungsformel, identisch zu {@code GameObject.damageWithDefense} des
+     * Clients (§8.3): {@code max(damage*3/20, damage - defense)}. Kein
+     * Armor-Piercing, keine Condition-Effekte in V2.
+     */
+    public static int damageWithDefense(final int damage, final int defense) {
+        return Math.max(damage * 3 / 20, damage - defense);
+    }
 }

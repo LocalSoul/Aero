@@ -73,20 +73,22 @@ class MultiplayerTest {
             assertThat(joinB.objectId()).isEqualTo(2);
             assertThat(joinB.update().newObjs).as("B sieht A und sich selbst").hasSize(2);
 
-            // A bekommt eine Update-Nachricht über B
+            // Nächster Tick: Sichtbarkeits-Diff meldet B an A (newObj) und
+            // jeder NewTick enthält beide Spieler.
+            realmRef.tell(new dev.localsoul.aero.actor.tick.Tick(1,
+                    java.time.Duration.ofMillis(50), false));
             await(() -> capA.messages.stream().anyMatch(this::isNewObjectUpdateForB));
             final Update bAnnounce = (Update) capA.messages.stream()
                     .filter(this::isNewObjectUpdateForB).map(this::extractUpdate).findFirst()
                     .orElseThrow();
             assertThat(bAnnounce.newObjs).hasSize(1);
             assertThat(bAnnounce.newObjs.get(0).status.objectId).isEqualTo(2);
-
-            // Nach einem Tick: jeder NewTick enthält beide Spieler
-            realmRef.tell(new dev.localsoul.aero.actor.tick.Tick(1, java.time.Duration.ofMillis(50), false));
             await(() -> hasNewTickWithTwoStatuses(capA) && hasNewTickWithTwoStatuses(capB));
 
-            // B verlässt -> A bekommt ein Update mit drop=2
+            // B verlässt -> nächster Tick: A bekommt ein Update mit drop=2
             realmRef.tell(new PlayerLeave(2));
+            realmRef.tell(new dev.localsoul.aero.actor.tick.Tick(2,
+                    java.time.Duration.ofMillis(50), false));
             await(() -> capA.messages.stream().anyMatch(this::isDropUpdateFor2));
         } finally {
             system.close();

@@ -1,87 +1,94 @@
-# Aero::Gameserver — Implementierungsplan (V1: Demo-Welt)
+# Aero::Gameserver — Implementierungsplan (V2: Kampf-Demo)
 
 > Der eigentliche RotMG-Gameserver: verwaltet Verbindungen (Netty), die
 > Weltsimulation und die Spieler. Baut auf der Actor-Runtime (`Actor/`) auf.
 >
 > Modul: `dev.localsoul:Aero::Gameserver` · Paketwurzel: `dev.localsoul.aero.game`
-> Abhängigkeiten: `Actor` (Runtime) + **Netty** (`netty-transport`, `-codec`,
-> `-handler`). Erste Version ist eine **Minimal-Demo**: Verbindung, leere Welt,
-> Bewegung. Kampf, Drops, Dungeons folgen in späteren Stufen.
+> Abhängigkeiten: `Actor` (Runtime) + **Netty** (`netty-codec`, `netty-handler`).
+>
+> **V1 (fertig):** Verbindung, RC4-Framing, leere Nexus-Welt, Bewegung,
+> Multiplayer-Sichtbarkeit. **V2 (fertig): Kampf** — Spieler schießen auf
+> Monster, Monster schießen zurück, XP/Level, Loot-Bags, Monster-Respawn und
+> ein `/give`-Chatbefehl. Dieses Dokument ist die Implementierungs-Referenz.
 
 ---
 
-## 1. Abgrenzung und Ziel (V1)
+## 1. Abgrenzung und Ziel (V2)
 
 | Modul | Rolle | Zuständig für |
 |---|---|---|
 | `Actor` | Runtime | Actor-Modell, Tick, Supervision, Mailboxen, `InterestSet` (fertig) |
-| `Server` | HTTP/Appengine | Login, `/char/list`, `/app/init`, … (statische Ressourcen, Skeleton) |
-| **`Gameserver`** | **Echtzeit-Welt** | TCP-Verbindung, Protokoll, Weltsimulation (neu) |
+| `Server` | HTTP/Appengine | Login, `/char/list`, `/app/init`, … (statische Ressourcen) |
+| **`Gameserver`** | **Echtzeit-Welt** | TCP, Protokoll, Simulation, **Kampf** |
 
-**V1-Ziel (Demo):** Der unmodifizierte Flash-Client (27.7.X2) verbindet sich,
-ein Spieler erscheint in einer leeren Welt und bewegt sich; die Bewegung wird
-per `NewTick` an ihn selbst und an Mitspieler im selben Raum verteilt.
-**Kein** Account-Check, **kein** Speichern, **kein** Kampf in V1.
+**V2-Ziel (Demo):** Der unmodifizierte Flash-Client (27.7.X2) spielt gegen
+**Ghost Mages** in der Nexus-Welt:
 
-HTTP-Modul und Gameserver sind in V1 **entkoppelt** (kein geteilter Zustand);
-ein gemeinsamer Login-Token/Session-Store ist ein späterer Schritt.
+- Spieler schießt mit der Startwaffe (**Energy Staff**, `0xa97`) → Client meldet
+  Treffer per `EnemyHit` → Server validiert und schadet dem Monster.
+- Monster (**Ghost Mage**, `0x664`) schießt periodisch → Server simuliert die
+  Projektile selbst, sendet `EnemyShoot` und bei Treffer `Damage`.
+- Monster-Tod → XP (`Notification`), **Soulbound Loot Bag** auf dem Boden,
+  Respawn nach Verzögerung.
+- Spieler-Tod → `Death`, Entity entfernen, Verbindung bleibt (Client zeigt den
+  Death-Screen).
+- Chatbefehl **`/give <type>`** legt ein Item ins Spieler-Inventar
+  (Demo-Hilfe / Item-Verteilung).
 
----
-
-## 2. Leitentscheidungen (aus dem Review)
-
-1. **Neues Maven-Modul** `Gameserver`; `Server` bleibt der HTTP-Teil.
-2. **Byte-exaktes 27.7.X2-Protokoll** — der unveränderte Client spielt direkt.
-   RC4-Keys sind im Client **fest verdrahtet**, es gibt **keinen Handshake**
-   (bewusst akzeptiert statt „verbessert", Grundlage der Byte-Kompatibilität).
-3. **Entities sind Plain Objects im Reich — von Anfang an, nicht erst „L4".**
-   Der `RealmActor` iteriert intern über eine `Int2ObjectMap<Entity>` und ruft
-   `entity.simulate(dt)` direkt auf. **Kein Message-Passing pro Entity, kein
-   Antwort-Sammeln.** Grund: Ein Tick betrifft alle Entities gleichzeitig
-   (Fan-out); das über Mailboxen zu schicken ist reiner Overhead (20 Hz × 200
-   Spieler = 8 000 Msg/s nur fürs Bewegen). Der **Nexus ist der Worst Case**
-   (ein geteilter Raum, höchste Spielerzahl auf einem Carrier) — dort darf die
-   Simulation reine Objekt-Iteration sein. **Actors bleiben für zwei Zwecke:**
-   - **Sessions** — wirklich unabhängig/asynchron (Client-Input kommt jederzeit
-     rein), brauchen Isolation + Supervision.
-   - **Realms** — parallel zueinander, **die eigentliche Skalierungsachse**
-     (viele Realms auf vielen Carrier-Threads).
-4. **Netty decodiert, Session-Actor verarbeitet.** Event-Loop blockiert nie;
-   Outbound ist **gebündelt** (Flush pro Tick) mit **Backpressure + Kick**
-   (s. §6) — kein `writeAndFlush` pro Paket.
-5. **`Hello`/`Load` akzeptieren + Demo-Welt:** syntaktische Validierung, keine
-   Auth gegen das HTTP-Modul.
-6. **`InterestSet` (Spatial Hash Grid) ist in V1 ein echter Mechanismus**, kein
-   Platzhalter: `NewTick`/`Update` werden aus `interestSet.near(...)` gebaut,
-   nicht als „alle Objekte". In der leeren Welt sehen sich alle, aber das
-   Delta-Format ist von Tag 1 sichtbarkeitsgetrieben.
-7. **Server-Tick 20 Hz + `NewTick`:** `Move` ist Eingabe, der Server ist
-   autoritativ und validiert sanft (maximale Distanz pro Tick).
-8. **Persistenz V1: In-Memory**, kein Speichern; Disconnect verwirft den Spieler.
-9. **Supervision:** `RealmSupervisor` über die Realms; **`SessionSupervisor` je
-   Verbindung** (ein Spieler ohne aktive Verbindung existiert in V1 nicht).
-   Entities sind Plain Objects → Realm-interne Entity-Fehler werden im Tick
-   abgefangen, nicht supervized.
-10. **„Nexus" ist keine Singleton, sondern eine Shard-Menge (bewusste
-   Entscheidung).** Der `Nexus` ist strukturell single-threaded (ein
-   Realm-Actor = ein Carrier-Thread) — die Kapazitätsgrenze liegt dort auf
-   einer Core-Leistung von `simulate` + `InterestSet.near` + Batch-Bau. Das
-   Original löst das durch mehrere Nexus-Instanzen (Sharding). Deshalb bildet
-   eine **`RoomRegistry`** `gameId → Shard-Menge` ab; V1 startet eine Instanz,
-   aber ein zweiter Nexus-Shard (Last-verteilt) ist eine Konfigurations-,
-   keine Struktur-Änderung. Skalierung ist damit zweistufig: **Shards pro
-   Raum-Typ** + **Realms** (Dungeons/Instanzen).
-11. **Backpressure/Kick ist ein Nachrichtenfluss, kein direkter `close()`** aus
-    dem Netty-Thread (s. §6): Backpressure → `BackpressureKick` → Realm
-    entfernt die Entity im Tick → `KickConfirmed` → erst dann `channel.close()`.
-    Invariante: **nur der Realm-Thread mutiert die Entity-Map.**
+**Nicht in V2:** Drops von Rüstungs-/Waffenfähigkeit über `ShowEffect`-Varianten,
+Persistenz, Account-Kopplung mit `Server`, Reconnect, `Escape`-Logik
+(Verbindungsabbau wie in V1), andere Waffen als der Energy Staff.
 
 ---
 
-## 3. Wire-Protokoll 27.7.X2 (am Client verifiziert)
+## 2. Leitentscheidungen (V2, aus dem Review)
 
-Quelle: `RotMG_Client_27.7.X2/src/kabam/lib/net/impl/SocketServer.as`,
-`GameServerConnectionConcrete.as`.
+1. **Beide Kampf-Richtungen** werden implementiert (Spieler→Monster **und**
+   Monster→Spieler) — erst das ergibt einen echten Kampf-Loop.
+2. **Autorität Spieler-Projektile: Client-Report + Server-Validierung.**
+   Der Client erkennt Treffer visuell und meldet `EnemyHit`; der Server
+   rekonstruiert den Schuss aus dem vorherigen `PlayerShoot` und validiert
+   Plausibilität (Reichweite/Winkel). Das ist das klassische RotMG-Modell und
+   entspricht dem Client. *Keine* Server-Simulation von Spieler-Projektilen.
+3. **Autorität Monster-Projektile: volle Server-Simulation.** Der Server
+   simuliert jeden `EnemyShoot`-Schuss (Plain-Object-`Projectile`, pro Tick
+   vorgeschoben), kollidiert gegen Spieler und sendet `Damage`. `PlayerHit`
+   wird geparst, ist aber **nicht** die Schadensquelle — kein Client kann sich
+   damit selbst Schaden zufügen oder einreden.
+4. **Monster & Projektile sind Plain Objects im Reich** (wie V1-Entities):
+   reine Objekt-Iteration im `RealmActor`-Tick, kein Message-Passing pro
+   Entity. Nur der Realm-Thread mutiert den Weltzustand. **Skalierung läuft
+   später bewusst über Realm-Sharding/mehrere Realms, nicht über
+   Entity-Actors** (Projektil pro Actor wäre bei 20 Hz × n Projektilen
+   Message-Overhead ohne Nutzen) — das ist eine Design-Entscheidung, keine
+   Abweichung vom Actor-Konzept.
+5. **`NewTick`-Sichtbarkeit wird erweitert:** Spieler↔Spieler bleibt über den
+   bestehenden `InterestSet`; Monster werden per einfachem **Radius-Scan über
+   die Monster-Liste** je Viewer ergänzt (in V2 wenige Dutzend Monster — eine
+   echte Entitäts-Spatialstruktur ist V3). Die V1-Tests bleiben unberührt.
+6. **Schaden nach der Client-Formel** `GameObject.damageWithDefense`
+   (§8): `max(dmg*3/20, dmg - defense)` — kein Armor-Piercing, keine
+   Condition-Effekte in V2.
+7. **`/give` ist ein Serverbefehl über `PlayerText`.** Der Client sendet jeden
+   Chattext (außer `/help`) als `PlayerText`. **Hinweis:** Der Client mappt
+   das eingehende `Text`-Paket (ID 34) **nicht** — Server-Chat wird also nicht
+   gerendert; als Erfolgs-Feedback dient optional eine `Notification` über dem
+   Spieler (QueuedStatusText, §9).
+8. **Loot-Bag-Pickup ist server-seitig auf Nähe.** Kein Client-Paket nötig:
+   Steht der **Berechtigte** nah genug an der Bag, überträgt der Server die
+   Items in die ersten freien Inventar-Slots und entfernt die Bag. Die
+   Soulbound-Bindung ist in V2 rein server-seitig (s. §6.2).
+9. **Respawn hält die Demo am Leben:** Tote Ghost Mages respawnen nach
+   `RESPAWN_MS` (z. B. 10 s) an einer zufälligen Position auf einem
+   **begehbaren Tile** (in V2 ist die komplette 50×50-Map Grund `0x02`; beim
+   späteren Map-Import Walkability prüfen).
+10. **Keine Persistenz in V2.** Disconnect verwirft Inventar/XP.
+
+---
+
+## 3. Wire-Protokoll 27.7.X2 (unverändert aus V1, am Client verifiziert)
+
+Quelle: `RotMG_Client_27.7.X2/src/kabam/rotmg/messaging/impl/...`.
 
 ### Frame-Format
 
@@ -95,443 +102,456 @@ Quelle: `RotMG_Client_27.7.X2/src/kabam/lib/net/impl/SocketServer.as`,
 - **length** = `payload.size + 5` (4 Bytes Längenfeld + 1 Byte Typ), im Klartext.
 - **type** = 1 Byte Message-ID, im Klartext.
 - **payload** = die Paketfelder, **RC4-verschlüsselt**.
-- Der Client wartet erst 4 Bytes Länge, dann Typ + Payload, entschlüsselt den
-  Payload, dann `parseFromInput`.
 
 ### Verschlüsselung (kein Handshake!)
-
-Feste RC4-Keys aus dem Client (`GameServerConnectionConcrete.encryptConnection`,
-nur aktiv bei `Parameters.ENABLE_ENCRYPTION`):
 
 | Richtung | RC4-Key (hex) |
 |---|---|
 | Client → Server (Server entschlüsselt) | `311f80691451c71d09a13a2a6e` |
 | Server → Client (Server verschlüsselt) | `72c5583cafb6818995cdd74b80` |
 
-- **RC4 ist zustandsbehaftet:** eine Cipher-Instanz **pro Richtung pro
-  Verbindung**, über alle Pakete hinweg weiterlaufend (der Client macht das
-  genauso). Nicht pro Paket neu seeden!
-- Java hat kein RC4 in der Standardbibliothek → kleine ARCFOUR-Implementierung
-  (KSA + PRGA, ~30 Zeilen) im Gameserver.
-
-### Verbindungsziel des Clients
-
-Der Client verbindet auf `server.address : server.port`. Für die Demo gilt der
-`LocalhostServerModel` (`localhost : Parameters.PORT`). Der Gameserver-Port ist
-als Parameter konfigurierbar (Default z. B. `2050`).
+RC4 ist **zustandsbehaftet**: eine `Rc4Cipher`-Instanz **pro Richtung pro
+Verbindung**, über alle Pakete weiterlaufend (der Client macht das genauso).
 
 ---
 
-## 4. Paketsatz V1
+## 4. Paketsatz V2
 
 ### Vom Client kommend (outgoing)
 
-| Paket | Zweck | Felder (Reihenfolge) |
+| Paket | ID | Felder (Reihenfolge) |
 |---|---|---|
-| `Hello` | Verbindung starten | `writeUTF buildVersion`, `writeInt gameId`, `writeUTF guid`, `writeInt (random)`, `writeUTF password`, `writeInt (random)`, `writeUTF secret`, `writeInt keyTime`, `writeShort key.len`, `key bytes`, `writeInt mapJSON.len`, `mapJSON bytes`, `writeUTF entrytag`, `writeUTF gameNet`, `writeUTF gameNetUserId`, `writeUTF playPlatform`, `writeUTF platformToken` |
-| `Load` | Charakter in Welt laden | `writeInt charId`, `writeBoolean isFromArena` |
-| `Move` | Bewegung | `writeInt tickId`, `writeInt time`, `WorldPosData newPosition`, `writeShort records.len`, je Record `MoveRecord(time, x, y)` |
-| `Escape` | Reich verlassen | – (leer) |
+| `Hello` | 86 | unverändert aus V1 |
+| `Load` | 63 | unverändert aus V1 |
+| `Move` | 24 | unverändert aus V1 |
+| `Escape` | 16 | – (leer) |
+| `PlayerShoot` | 41 | `writeInt time`, `writeByte bulletId`, `writeShort containerType`, `WorldPosData startingPos`, `writeFloat angle` |
+| `EnemyHit` | 94 | `writeInt time`, `writeByte bulletId`, `writeInt targetId`, `writeBoolean kill` |
+| `PlayerHit` | 37 | `writeByte bulletId`, `writeInt objectId` (geparst, in V2 nicht schadensrelevant) |
+| `PlayerText` | 9 | `writeUTF text` |
 
-Acks (`UpdateAck`, `GotoAck`, `Pong`, `ShootAck`) werden in V1 entgegengenommen,
-aber nicht benötigt.
+`ShootAck` (10), `UpdateAck` (96), `GotoAck` (99), `Pong` (83) werden in V2
+entgegengenommen, aber nicht benötigt.
 
 ### Vom Server kommend (incoming)
 
-| Paket | Zweck | Felder (Reihenfolge) |
+| Paket | ID | Felder (Reihenfolge) |
 |---|---|---|
-| `MapInfo` | Weltdaten | `readInt width`, `readInt height`, `readUTF name`, `readUTF displayName`, `readUnsignedInt fp`, `readInt background`, `readInt difficulty`, `readBoolean allowPlayerTeleport`, `readBoolean showDisplays`, `readShort clientXML.len` (je: `readInt len` + UTF-Bytes), `readShort extraXML.len` (je: `readInt len` + UTF-Bytes) |
-| `CreateSuccess` | Spieler ist drin | `readInt objectId`, `readInt charId` |
-| `Update` | Objekte/Tiles | `readShort tiles.len` (je `GroundTileData: short x, short y, int type`), `readShort newObjs.len` (je `ObjectData: short objectType + ObjectStatusData`), `readShort drops.len` (je `readInt`) |
-| `NewTick` | Tick-Status | `readInt tickId`, `readInt tickTime`, `readShort statuses.len` (je `ObjectStatusData`) |
-| `Ping` | Latenz | – (V1 optional) |
+| `MapInfo` | 28 | unverändert aus V1 |
+| `CreateSuccess` | 58 | unverändert aus V1 |
+| `Update` | 44 | unverändert aus V1 |
+| `NewTick` | 31 | unverändert aus V1 |
+| `ServerPlayerShoot` | 1 | `writeByte bulletId`, `writeInt ownerId`, `writeInt containerType`, `WorldPosData startingPos`, `writeFloat angle`, `writeShort damage` |
+| `EnemyShoot` | 90 | `writeByte bulletId`, `writeInt ownerId`, `writeByte bulletType`, `WorldPosData startingPos`, `writeFloat angle`, `writeShort damage`, `writeByte numShots`, `writeFloat angleInc` |
+| `Damage` | 52 | `writeInt targetId`, `writeByte effectsCount` + `effects[]` (0 in V2), `writeUnsignedShort damageAmount`, `writeBoolean kill`, `writeByte bulletId`, `writeInt objectId` |
+| `Notification` | 20 | `writeInt objectId`, `writeUTF message` (JSON, s. §6), `writeInt color` |
+| `Death` | 12 | `writeUTF accountId`, `writeInt charId`, `writeUTF killedBy`, `writeInt zombieType`, `writeInt zombieId` |
 
-**Datenklassen** (`WorldPosData`, `ObjectData`, `ObjectStatusData`,
-`GroundTileData`, `MoveRecord`, `StatData`): Feldreihenfolgen **per Skript aus
-den Client-Klassen extrahieren** (`kabam/rotmg/messaging/impl/data/*`), nicht
-manuell abtippen — Off-by-one in `ObjectStatusData` ist sehr mühsam zu debuggen.
+### Datenklassen (StatData-Referenz, aus `StatData.as`)
 
-**Message-IDs:** Ebenfalls per Skript aus dem Client-Mapping
-(`GameServerConnectionConcrete`/`MessageCenter`) extrahieren und als
-`enum MessageType { id }` ablegen. Beides **vor dem ersten Codec-Test**
-vollständig erledigen (s. §14).
+Für `NewTick`/`ObjectData`-Status maßgeblich — nur die in V2 genutzten IDs:
 
----
+| Stat | ID | Typ |
+|---|---|---|
+| `MAX_HP` | 0 | int |
+| `HP` | 1 | int |
+| `MAX_MP` | 3 | int |
+| `MP` | 4 | int |
+| `NEXT_LEVEL_EXP` | 5 | int |
+| `EXP` | 6 | int |
+| `LEVEL` | 7 | int |
+| `INVENTORY_0` … `INVENTORY_11` | 8 … 19 | int |
+| `ATTACK` | 20 | int |
+| `DEFENSE` | 21 | int |
+| `SPEED` | 22 | int |
+| `NAME` | 31 | **String** (`writeUTF`) |
 
-## 5. Netty-Schicht
-
-```
-Netty Bootstrap (NIO/Epoll, ein Port)
-└─ ChannelInitializer
-   └─ Pipeline (inbound):
-       ConnectionLimiter (pro-IP-Limit, z. B. 5 aktive Verbindungen/IP)
-       IdleStateHandler (readerIdle, z. B. 30 s; plus Hello-Timeout 5 s nach Connect)
-       LengthFieldBasedFrameDecoder(lengthFieldOffset=0, lengthFieldLength=4,
-                                    lengthAdjustment=-4, initialBytesToStrip=0,
-                                    maxFrameLength=1 MiB, failFast=true)
-       └─ PacketDecoder (ByteToMessageDecoder)
-            • 1 Byte Typ (clear) lesen
-            • Rest = Payload, RC4-entschluesseln (Key 311f…)
-            • MessageType → Paketklasse, parseFromInput
-            • FloodGuard: Pakete/s pro Verbindung zaehlen (z. B. > 500/s → Kick)
-            → session.tell(packet)          [Netty-Thread → Actor-Mailbox]
-   Pipeline (outbound):
-       PacketEncoder (MessageToByteEncoder)
-            • Payload schreiben, RC4-verschluesseln (Key 72c558…)
-            • writeInt(payload+5), writeByte(type), writeBytes(payload)
-```
-
-### Security von Tag 1 (keine „später"-Lücken)
-
-- **`maxFrameLength` ist Pflicht** — ohne sie puffert
-  `LengthFieldBasedFrameDecoder` ein beliebig großes Längenfeld unbegrenzt
-  (OOM durch Portscanner). Default **1 MiB**, konfigurierbar, `failFast=true`.
-- **`IdleStateHandler`:** `readerIdleTime` (z. B. 30 s) schließt Verbindungen,
-  die keinerlei Traffic senden; zusätzlich ein **Hello-Timeout** (5 s nach
-  Connect, sonst Close) — verhindert offene Leichen-Verbindungen.
-- **`ConnectionLimiter`:** max. aktive Verbindungen **pro IP** (z. B. 5);
-  Zähler im ConcurrentHashMap. **Das Dekrement muss auf *jedem* Exit-Pfad
-  laufen** — `channelInactive`, `exceptionCaught`, Flood/Idle-Kick **und** die
-  selbst abgelehnte Verbindung (Zähler nicht erhöhen oder sofort zurückgeben).
-  Ein vergessener Pfad leckt den Zähler und sperrt IPs irgendwann fälschlich —
-  deshalb eigener Unit-Test `ConnectionLimiterTest` (s. §13), nicht nur der
-  Security-Integrationstest.
-- **`FloodGuard`:** Pakete/s pro Verbindung begrenzen (z. B. > 500/s → Kick).
-  Verhindert, dass ein Client die Realm-Mailbox mit `Move`-Spam flutet.
+**String-Stat** (sonst Int): `31 NAME`. Die V1-`StatData`-Logik
+(`isStringStat`) trifft das bereits korrekt.
 
 ---
 
-## 6. Backpressure & Outbound-Batching
+## 5. Kampf-Loop (Spezifikation)
 
-Ziel: aus vielen `send(...)` pro Tick wird **ein** Flush pro Client pro Tick,
-und ein langsamer Client kann den Raum **nicht** blockieren oder aufblähen
-(Head-of-Line-Schutz).
+### 5.1 Spieler → Monster (Client-Report + Validierung)
 
-- **RealmActor bündelt pro Spieler pro Tick:** Alle Outbound-Messages
-  (`NewTick`, ggf. `Update`, `Notification`) eines Ticks werden je Spieler in
-  eine Batch gepackt und als **eine** Nachricht an den `SessionActor` gesendet
-  (`session.tell(batch)`). Analog zum `OutboundBuffer`-Konzept der Runtime.
-- **`NettyClient.send(msg)` schreibt ohne Flush** in den Channel
-  (`channel.write(...)`), **`flush()` einmal am Tick-Ende** — nicht
-  `writeAndFlush` pro Paket (Syscall-Reduktion beim Broadcast an viele Spieler).
-- **Backpressure/Kick statt unbegrenztem Puffer:**
-  - Bounded Outbound-Queue pro Verbindung (z. B. 1024 Batches oder Byte-Limit).
-  - Ist die Queue voll **oder** `channel.isWritable() == false` über eine
-    Schwelle (z. B. mehrere Ticks), wird der Spieler **gekickt**.
-  - Damit kann ein hängender Client nicht den Sende-Puffer eines Realms
-    aufblähen — er fliegt raus statt den Tick zu blockieren.
-- Die Netty-`write`-Operation ist asynchron (Rückkanal über
-  `channel.isWritable()` + `ChannelWritabilityChanged`), blockiert also nie den
-  Realm-Thread.
+1. **`PlayerShoot`** trifft ein (SessionActor → Realm, `PlayerShootMsg`).
+   Der Realm:
+   - legt eine **Schuss-Spur** in einen **Ringpuffer der letzten N Schüsse**
+     je Spieler an (`Shot`: bulletId-Basis, `containerType`, startPos, angle,
+     firedAtMs, numProjectiles, gerollter Schaden, verbrauchte bulletIds). Ein
+     einzelnes `lastShot` reicht nicht — bei hoher Feuerrate kommt der
+     `EnemyHit` zum alten Schuss oft erst nach dem nächsten `PlayerShoot`.
+   - **rollt den Schaden** der Waffe (Energy Staff: `[MinDamage, MaxDamage]`)
+     und speichert ihn in der Spur — **derselbe Wert** fließt in
+     `ServerPlayerShoot.damage` an die anderen Clients und in die
+     Monster-Schadensrechnung (kein Neu-Rollen bei `EnemyHit`);
+   - broadcastet `ServerPlayerShoot(bulletId, ownerId, containerType,
+     startingPos, angle, damage)` an **alle anderen** sichtbaren Spieler
+     (der Schütze sieht sein Projektil bereits lokal).
+2. **`EnemyHit(time, bulletId, targetId, kill)`** trifft ein → Realm validiert:
+   - der Spieler hat eine **frische** Schuss-Spur, deren bulletId-Bereich
+     (`base … base+numProjectiles-1`, **modulo 256** — `bulletId` ist ein
+     Byte, der Client zählt über) den `bulletId` abdeckt und deren
+     Fired-Zeitpunkt innerhalb der Waffen-Lebensdauer liegt;
+   - der `bulletId` dieser Spur wurde **noch nicht verbraucht**
+     (pro Schuss wird jede bulletId genau einmal akzeptiert — verhindert,
+     dass ein manipulierter Client denselben Schuss mehrfach meldet);
+   - das `targetId` ist ein lebendes Monster im Realm;
+   - Distanz `startPos → monster.pos` ≤ Reichweite der Waffe
+     (`speed * lifetime / 10000` + Toleranz).
+   - **Gültig:** Treffer-`bulletId` als verbraucht markieren, Monster-HP
+     abziehen (gespeicherter Schaden, `damageWithDefense`).
+     **Ungültig:** ignorieren (kein Kick in V2, nur Log).
+   - **Kein `Damage`-Paket fürs Monster:** Der Client wendet den Schuss-
+     Treffer auf das Monster **selbst** lokal an (`Projectile.update` →
+     `enemyHit(...)` **und** `_local_6.damage(...)`); ein bestätigendes
+     Server-`Damage` würde den Schaden **doppelt** anwenden. Die autoritative
+     Monster-HP kommt über die `HP`-Stat im nächsten `NewTick`/`Update`.
+3. **Monster-Tod:** §6. Die Entfernung passiert **im Inbox-Drain (Tick-
+   Schritt 1)** — ein in diesem Tick getötetes Monster feuert nicht mehr
+   (Schritt 2/3, s. §7).
 
-### Kick-Pfad ist eine Nachricht, kein direkter `close()` (Invariante!)
+### 5.2 Monster → Spieler (volle Server-Simulation)
 
-Die `Int2ObjectMap<Entity>` gehört **exklusiv dem Realm-Thread** — das ist der
-Witz an Plain Objects. Die Backpressure-Erkennung (`isWritable()`,
-Queue-Füllstand) läuft aber im `NettyClient`/auf dem Netty-Thread. Deshalb ist
-**der Kick als Nachrichtenfluss modelliert** — nie `channel.close()` direkt aus
-der Backpressure-Prüfung, sonst gäbe es eine Race (Realm schreibt an einen
-toten Channel) oder eine verzögerte Entfernung:
-
-```
-NettyClient (Netty-Thread)
-  erkennt: Queue voll | !isWritable() über Schwelle
-  └─ session.tell(BackpressureKick(reason))        [Netty-Thread → Session-Mailbox]
-SessionActor (Session-Thread)
-  leitet weiter: realm.tell(KickPlayer(objectId, reason))
-RealmActor (Realm-Tick, nächster Tick)
-  1. Player-Entity aus Int2ObjectMap entfernen      ← einzige Stelle, die die Map mutiert
-  2. Mitspielern Update (Objekt entfernt) senden
-  3. session.tell(KickConfirmed(reason))            ← Realm hat die Entity geräumt
-SessionActor
-  └─ nettyClient.close() → channel.close()          ← erst JETZT schließen
-```
-
-Regel: **Nur der Realm-Thread mutiert die Entity-Map.** `channel.close()`
-passiert erst, nachdem der Realm die Entfernung bestätigt hat (`KickConfirmed`).
-Für den Netty-Thread heißt das: Backpressure → melden, nicht schließen.
-Disconnects von außen (`channelInactive`) sind davon unabhängig — sie laufen
-über denselben `PlayerLeave`-Pfad in den Realm (s. §7-Datenfluss).
-
----
-
-## 7. Actor-Mapping
-
-```
-ActorSystem "game"
-└─ RoomRegistry                        (lookup: gameId → Shard-Menge, kein Singleton)
-   └─ RealmSupervisor (pro Realm, ONE_FOR_ONE)
-      └─ RealmActor (TickActor, 20 Hz) — besitzt Map + InterestSet + Int2ObjectMap<Entity>
-         ├─ Entity (Plain Object)      ← je Objekt (Spieler; spaeter Monster, Portal)
-         └─ SessionSupervisor (je Verbindung, ONE_FOR_ONE)
-            └─ SessionActor (Actor)    ← eine Netty-Verbindung
-```
-
-- **`RoomRegistry` — „Nexus" ist keine Singleton, sondern eine Shard-Menge.**
-  Der Lookup bildet `gameId` (bzw. Raum-Typ, z. B. `Nexus`) auf eine Menge
-  austauschbarer `RealmActor`-Instanzen ab; ein Load/Join wählt einen Shard
-  (z. B. geringste Last oder Round-Robin). **V1 startet genau eine Instanz pro
-  Raum-Typ**, aber die Struktur ist von Anfang an auf mehrere Nexus-Kopien
-  ausgelegt (das Original sharded den Nexus über mehrere Instanzen) — das
-  nachträglich einzuziehen wäre unangenehmer. Die Skalierungsachse ist damit
-  bewusst zweistufig: mehrere Shards pro Raum-Typ **und** mehrere Realms.
-- **`RealmActor extends TickActor`** — besitzt die leere `Map` (width×height),
-  einen `InterestSet` und die `Int2ObjectMap<Entity>`. Pro Tick (§8): Eingaben
-  drainen, Entities simulierten, Sichtbarkeit abfragen, Outbound bündeln.
-  **Es gibt kein `Simulate`-Message-Passing zu Entities** — die Iteration ist
-  interner Objektaufruf.
-- **`Entity` (Plain Object)** — Zustand + `simulate(dt)`; `Player` erweitert
-  `Entity` um Zielposition, Validierung und Status (→ `ObjectStatusData`).
-  Kein Thread, kein Actor.
-- **`SessionActor extends Session`** (aus `actor.session`) — eine Verbindung;
-  Outbound über den `NettyClient` (gebündelt, s. §6). `client.send(...)` =
-  Channel-Write.
-
-### Datenfluss Session ↔ Realm (wer ändert was)
-
-Die Verantwortung ist **eine einzige, explizite Kette** — es gibt keine zweite
-Stelle, die Spielzustand mutiert:
-
-1. **Netty-Pipeline** decodiert Bytes → Paket (`Hello`, `Load`, `Move`, …).
-2. **`SessionActor.onInbound`** prüft nur **syntaktisch/formal** (Plausibilität,
-   Hello-Felder vorhanden, Load-charId int) und leitet dann **semantische
-   Nachrichten** an den Realm weiter: `PlayerHello(session, gameId)`,
-   `PlayerJoin(session, charId)`, `PlayerMove(objectId, pos, records)`,
-   `PlayerLeave(objectId)`.
-3. **`RealmActor`** verarbeitet diese in seinem Tick (`ctx.drainInbox`) — dort
-   passiert **jeder Zustandsübergang** (Entity anlegen, Zielposition setzen,
-   Entity entfernen). Nur der Realm-Thread mutiert Map/Entities/InterestSet.
-4. **Rückkanal (symmetrisch zum Kick):** Was der Realm erzeugt, geht als
-   Nachricht zurück an die Session: `MapInfoReady`, `JoinConfirmed`,
-   `KickConfirmed`. **Auch die Outbound-Pakete baut der Realm** (er kennt Map
-   und Entity-Zustand) — die Session schreibt sie nur in den Channel.
-
-Der `SessionActor` hält **keinen Spielzustand** (kein Entity, keine Position,
-keine objectId); er ist reiner Transport für eine Verbindung.
-
-### Join-Pfad (symmetrisch zum Kick)
-
-`CreateSuccess` (§4) trägt die `objectId`, und die wird **im Realm-Tick**
-vergeben, wenn das Entity angelegt wird. Deshalb hat der Join denselben
-Ack-Kanal wie der Kick. Der Client-Flow ist **zweiphasig** (am Client
-verifiziert): `Hello` → `MapInfo` → (Client sendet `Load`) → `Update` +
-`CreateSuccess`.
-
-```
-Phase 1 — Hello → MapInfo (kein Entity)
-  SessionActor: onInbound(Hello) → syntaktisch ok
-    └─ realm.tell(PlayerHello(session, gameId))
-  RealmActor (Tick): Shard binden, MapInfo bauen
-    └─ session.tell(MapInfoReady(mapInfo))
-  SessionActor: MapInfo in den Channel schreiben + einmalig flushen
-    Client: bekommt MapInfo → sendet Load
-
-Phase 2 — Load → Update + CreateSuccess (Entity entsteht)
-  SessionActor: onInbound(Load) → syntaktisch ok
-    └─ realm.tell(PlayerJoin(session, charId))
-  RealmActor (Tick):
-    1. Player-Entity in Int2ObjectMap anlegen, objectId vergeben   ← einzige Stelle
-    2. Update (create player) + CreateSuccess bauen
-    3. session.tell(JoinConfirmed(objectId, update, createSuccess))
-  SessionActor: Update → CreateSuccess der Reihe nach schreiben + flushen
-```
-
-**Reihenfolge ist Spezifikation und kommt aus dem Realm:** `MapInfo` vor
-`Update` vor `CreateSuccess`; `CreateSuccess` erst, nachdem das Entity im
-Welt-Snapshot liegt (es erscheint ab dem nächsten `NewTick`). Da der Realm alle
-drei Pakete baut und der Client ohne `MapInfo` kein `Load` sendet, ist die
-Reihenfolge strukturell garantiert — die Session kann sie nicht vertauschen.
-`JoinConfirmed` ist zugleich der Zeitpunkt, ab dem die Session die
-Per-Tick-Outbound-Batches des Realms weiterleitet.
-
-- **Supervision:** `RealmSupervisor` (ONE_FOR_ONE) startet Realms neu
-  (`spawnReplacing`, Namens-Wiederverwendung). `SessionSupervisor` je Verbindung
-  startet eine Session neu. **Entities werden nicht supervized** — sie sind
-  Plain Objects; ein Fehler in `entity.simulate` wird im Realm-Tick abgefangen
-  (`try/catch` je Entity), geloggt und das Entity entfernt. Damit gibt es auch
-  **kein Timeout-Problem** „Entity antwortet nicht" — es gibt keine Antworten.
-
-> **Warum Sessions als Actors, Entities nicht:** Client-Input ist unabhängig
-> und asynchron (jederzeit) und braucht Isolation; die Simulation ist synchron
-> getaktet und betrifft alle Entities gleichzeitig (Fan-out) — dort ist
-> Objekt-Iteration die richtige Struktur. Realms sind untereinander parallel
-> und damit die Skalierungsachse (viele Realms, viele Carrier-Threads).
+1. **AI im Realm-Tick (§7):** Das Monster wählt den nächsten Spieler im
+   Aggro-Radius und feuert nach Ablauf seiner `attackPeriod`.
+2. Der Realm erzeugt ein `Projectile`-Plain-Object (owner=Monster-Id,
+   bulletId=monster-lokaler Zähler, bulletType=`0`, startPos=Monster-Position,
+   angle=zum Ziel, damage=40, speed=`50`, lifetime=`3000 ms`) und broadcastet
+   `EnemyShoot(...)` an alle Spieler, die das Monster sehen.
+3. **Projektile werden pro Tick vorgeschoben** (§8: `pos = start +
+   ageMs * speed / 10000` entlang angle, speed als **Rohwert**) und gegen
+   **alle Spieler** kollidiert (Kreis/Kreis, Hit-Radius konstant ~0.6; s. §8).
+   **Trifft ein Projektil mehrere Spieler im selben Tick, bekommt nur der
+   erste Schaden** (Projektil wird sofort entfernt).
+4. **Treffer:** `Damage(targetId, effects=[], damageAmount, kill=false,
+   bulletId, objectId=monsterId)` an den getroffenen Spieler; HP abziehen;
+   Projektil entfernen. `PlayerHit` wird geparst, aber ignoriert.
+5. **Spieler-HP ≤ 0:** `Death(accountId, charId, killedBy="Ghost Mage",
+   zombieType=-1, zombieId=-1)` an den Spieler, Entity entfernen (Despawn für
+   andere über den Sichtbarkeits-Diff, §7). **Bereits tote Spieler werden in
+   diesem Tick nicht erneut getroffen** (kein zweites `Death`). `killedBy`
+   ist im `Death`-Paket nur informativ — die „Killed by"-Zeile des
+   Death-Screens stammt aus dem Fame-HTTP-Endpoint (nicht in V2).
 
 ---
 
-## 8. Simulation & Bewegung
+## 6. Tod, XP, Loot, Respawn
 
-- **Tick-Rate:** Default **20 Hz** (50 ms), konfigurierbar; `TickDriver` mit
-  `CLAMP`.
-- **Tick-Reihenfolge im `RealmActor` (Spezifikation):**
-  1. `ctx.drainInbox(budget)` — eingehende Nachrichten aus dem Datenfluss (§7)
-     verarbeiten: `PlayerHello` (MapInfo bauen → `MapInfoReady`),
-     `PlayerJoin` (Entity anlegen, objectId vergeben → `JoinConfirmed`),
-     `PlayerMove` (Ziel-/Wunsch-Position der `Player`-Entity setzen),
-     `PlayerLeave`/`KickPlayer` (Entity entfernen → `KickConfirmed`).
-     **Alle Zustandsübergänge passieren hier — nur der Realm-Thread.**
-  2. `for (Entity e : entities.values()) { try { e.simulate(dt); }
-     catch (Throwable t) { /* loggen, Entity entfernen */ } }` — interne
-     Iteration, **keine Nachrichten**.
-  3. Bewegungs-Validierung (s. u.), Positionen in `InterestSet` nachziehen
-     (`move`).
-  4. Pro Spieler: `interestSet.near(player.interest, out)` → `NewTick`-Status
-     aus den sichtbaren Entities bauen; Outbound pro Spieler bündeln.
-  5. Einmal `flush` je Verbindung (§6).
-- **`Move`-Validierung (sanft):** Pro Tick prüft der Server, dass die neue
-  Position die maximale Lauf-Distanz (`speed * dt + Toleranz`) nicht
-  überschreitet und innerhalb der Map liegt. Verstoß → Position korrigieren/
-  ignorieren (kein Kick in V1).
-- **Autoritativ:** Positionen kommen aus der Server-Simulation, `Move` ist nur
-  Eingabe. `NewTick` trägt die Server-Status.
-- **Sichtbarkeit:** `NewTick`/`Update` entstehen **ausschließlich** über
-  `InterestSet.near(...)` (echtes Spatial Hash Grid aus der Runtime). In der
-  leeren V1-Welt sehen sich alle Spieler (Radius deckt die kleine Map ab),
-  aber der Code ist von Tag 1 sichtbarkeitsgetrieben — für größere Welten
-  ändert sich das Delta-Format nicht mehr.
+### 6.1 Monster-Tod
+
+Wenn ein Monster-HP ≤ 0:
+
+1. **Entfernen:** Monster aus der Welt nehmen. Das `Update.drops` an die
+   Zuschauer erzeugt **der Sichtbarkeits-Diff** (§7, Schritt 6) — kein
+   separates Drops-Paket im Kill-Pfad, sonst Doppel-Drops.
+2. **XP:** dem Killer `exp += round(maxHp * XpMult)` (= `130 * 0.1 = 13`)
+   geben; `Notification(objectId=killerId, message={"key":"server.plus_symbol",
+   "tokens":{"amount":"13"}}, color=0xFFFFFF)`.
+   **Killer fehlt** (im selben Drain zuvor `PlayerLeave`/`KickPlayer`/
+   Spieler-Tod verarbeitet) → **kein XP, keine Bag** (null-sicher, kein
+   Absturz).
+   Level-Up: `exp >= nextLevelExp` → `level++`, `exp -= nextLevelExp`,
+   `nextLevelExp = 100 + (level-1)*50`. **Bewusste Vereinfachung** — die echte
+   RotMG-Kurve (`50 + (level-2)*100 + …`) ist für die Demo nicht nötig. Der
+   Client rendert Level-Up/Exp aus den Stat-Änderungen in `NewTick` selbst
+   (`handleLevelUp`/`handleExpUp`) — nur `LEVEL`/`EXP`/`NEXT_LEVEL_EXP` als
+   Stats senden.
+3. **Loot-Bag:** `Soulbound Loot Bag` (`0x0503`, Container mit `<Loot/>`,
+   8 Slots) an der Monster-Position erzeugen, **Eigentümer = Killer-Spieler**.
+   Inhalt: **1 Waffe** aus
+   `{Wand of Death 0xa07, Fire Wand 0xa04, Energy Staff 0xa97}` als
+   `INVENTORY_0`-Stat im `ObjectStatusData` der Bag. Sichtbar für alle via
+   Sichtbarkeits-Diff.
+4. **Respawn-Planung:** Monster-Auferstehung nach `RESPAWN_MS` (10 s) an
+   zufälliger **begehbarer** Position. Beim Respawn gilt **keine
+   Sofort-Schuss**: `nextAttackAt = now + attackPeriodMs` (§8.1).
+
+### 6.2 Bag-Lebensdauer & Pickup (server-seitig, nur Eigentümer)
+
+- **Lebensdauer:** Jede Bag läuft nach `BAG_LIFETIME_MS` (~60 s, entspricht
+  dem Original) ab und wird im Bag-Schritt des Ticks despawned — egal ob der
+  Killer noch da ist (Disconnect/Death hinterlassen keine ewigen Bags).
+- Jede Bag merkt sich den **Killer-Spieler** (server-seitig). Pro Tick wird
+  nur geprüft, ob **dieser** Spieler ≤ `PICKUP_RADIUS` (~1.0) entfernt steht →
+  Items in die **ersten freien Inventar-Slots (4–11)**. Inventar voll oder
+  falscher Spieler → Bag bleibt liegen.
+- **Einschränkung V2:** Die Soulbound-Bindung ist rein server-seitig
+  (Pickup-Autorität). Der Client rendert Bags für alle sichtbaren Spieler —
+  die Klau-Prävention kommt über den Server, nicht über ein `OWNER_ACCOUNT_ID`-
+  Stat (das ist V4 mit Account-System).
+- Bag entfernen → Despawn-Drop via Sichtbarkeits-Diff; der Spieler bekommt die
+  neuen `INVENTORY`-Stats im nächsten `NewTick`.
+
+### 6.3 Spieler-Tod
+
+`Death` senden, Entity entfernen (Despawn-Drop für andere via
+Sichtbarkeits-Diff). Der SessionActor behält die Verbindung (Client zeigt den
+Death-Screen); ein Reconnect/`Escape` ist V3+.
 
 ---
 
-## 9. Lebenszyklus & Persistenz (V1)
+## 7. Realm-Erweiterungen (`RealmActor`)
 
-- **Character-Daten:** In-Memory. Beim ersten `Load` legt der Server einen
-  Standard-Charakter an (Level 1, Standard-Klasse/Textur). Kein Speichern.
-- **Disconnect:** `channelInactive` → `SessionActor.stop(...)` →
-  `PlayerLeave`-Nachricht an den Realm → `Player`-Entity im Tick entfernen →
-  Mitspieler bekommen `Update` (Objekt entfernt). Persistenz/Retry
-  (`Reconnect`-Paket) folgt später.
-- **`Reconnect`** (vom Server initiiert) wird in V1 nicht gesendet.
-- **Persistenz blockiert nie den Realm-Thread (V4, aber Design von Anfang an):**
-  Sobald gespeichert wird, passiert das über einen **eigenen
-  `PersistenceActor`** (separater Actor, `runBlocking`-Offload für DB/IO). Der
-  Realm sendet Save-Aufträge nur **fire-and-forget** (`persistence.tell(Save(...))`)
-  — nie blockierend im Realm-Tick. Auch im Carrier-Kontext: kein `synchronized`
-  auf fremde Locks im Realm-Thread (Pinnt den Carrier; Diagnose mit
-  `-Djdk.tracePinnedThreads=full`).
+```
+RealmActor (TickActor, 20 Hz)
+├─ IntObjectHashMap<Player>  players      (unverändert aus V1; + knownObjectIds)
+├─ IntObjectHashMap<Monster> monsters     (neu, Plain Objects)
+├─ List<Projectile>          projectiles  (neu, nur Monster-Bullets)
+├─ List<LootBag>             lootBags     (neu)
+└─ InterestSet               interest     (Spieler↔Spieler, unverändert)
+```
+
+**Sichtbarkeits-Zustand je Spieler:** Jeder `Player` hält `knownObjectIds:
+Set<Integer>` — die Objekt-IDs, die sein Client gerade kennt (eigenes Objekt,
+Spieler, Monster, Bags). Der **Sichtbarkeits-Diff** (Schritt 6) ist die
+**einzige** Quelle für `newObjs`/`drops` pro Tick. Beim Join wird das Set aus
+dem Join-`Update` befüllt; Spawn/Despawn (Kill, Tod, Respawn, Bag) laufen
+danach automatisch über den Diff — kein separates `notifyOthers`.
+
+**Tick-Reihenfolge (V2, erweitert um §8):**
+
+1. `ctx.drainInbox(budget)` — Nachrichten: `PlayerHello`, `PlayerJoin`,
+   `PlayerCreate`, `PlayerMove`, `PlayerLeave`, `KickPlayer` (V1) plus neu:
+   `PlayerShootMsg`, `EnemyHitMsg`, `PlayerTextMsg`.
+   **Hier passieren die Kills:** Monster-HP ≤ 0 (aus `EnemyHit`) wird jetzt
+   entfernt (inkl. XP/Loot/Respawn-Planung, s. §6.1 — Killer-null-sicher) —
+   damit feuert ein in diesem Tick getötetes Monster in Schritt 2 nicht mehr.
+   Join: Player anlegen, `knownObjectIds` aus dem Join-`Update` (Tiles +
+   sichtbare Objekte) befüllen.
+2. **Monster-AI:** für jedes **lebende** Monster `monster.simulate(dt)` (ggf.
+   Ziel wählen, feuern). Neu gespannte `Projectile`s der Liste hinzufügen.
+3. **Spieler:** `player.simulate(dt)` — Bewegung Richtung `Move`-Ziel (max.
+   `speed*dt` je Tick + Map-Clamping, V1) **plus HP-Regeneration** (§8.4);
+   anschließend `interest.move(...)`.
+4. **Projektile:** vorschieben, kollidieren (→ `Damage`/`Death`), abgelaufene
+   entfernen. Läuft **vor** der Sichtbarkeit (6), damit `NewTick` im selben
+   Tick schon die geänderten HP/Death-Stände trägt.
+5. **Bags:** Nähe-Pickup prüfen (→ Items in Inventar, Bag entfernen);
+   **abgelaufene Bags (`BAG_LIFETIME_MS`) despawnen.**
+6. **Sichtbarkeit bauen (Diff):** pro Spieler
+   - `NewTick` aus `interestSet.near` + **Monster-Radius-Scan** (HP, POS,
+     SIZE) + **Bags im Radius**;
+   - `visible = {sichtbare Objekt-IDs}` mit `knownObjectIds` **diffen**:
+     `visible \ known` → `Update.newObjs`, `known \ visible` →
+     `Update.drops`; danach `knownObjectIds = visible`. Für neue Spieler
+     (Join in Schritt 1) ist der Diff im selben Tick quasi leer (Set ist
+     frisch befüllt).
+   - alles als `OutboundBatch`.
+7. Einmal `flush` je Verbindung (§6 der V1-Doku bleibt gültig).
+
+**Message-Fluss (erweitert um §7 der V1-Doku):**
+
+```
+SessionActor.onInbound(PlayerShoot)  → realm.tell(PlayerShootMsg(...))
+SessionActor.onInbound(EnemyHit)     → realm.tell(EnemyHitMsg(...))
+SessionActor.onInbound(PlayerText)   → realm.tell(PlayerTextMsg(text))
+
+RealmActor (Tick):  Zustandsübergänge ausschließlich hier.
+RealmActor          → session.tell(OutboundBatch(...))  (Pakete inkl. Damage/Death)
+```
+
+Der `SessionActor` bleibt reiner Transport (kein Spielzustand).
+
+---
+
+## 8. Welt, Damage & Bewegung
+
+### 8.1 `Monster` (Plain Object, `world/`)
+
+Felder: `objectId`, `objectType` (`0x664` Ghost Mage), `pos`, `hp=130`,
+`maxHp`, `defense=0`, `size=100` (Radius = `size/200` = 0.5 Einheiten für
+Kollision), `attackPeriodMs=2000`, `nextAttackAtMs`, `bulletId`-Zähler,
+`respawnAtMs` (nach Tod), `name="Ghost Mage"`.
+
+`simulate(dt)`:
+- tot und Respawn-Zeit erreicht → **nahe der ursprünglichen Spawn-Position**
+  (`spawn ± ~1 Einheit`, deterministisch, hält die Monster im Geschehen),
+  `hp=maxHp`, zurück in die Live-Liste. **Kein Sofort-Schuss beim Respawn:**
+  `nextAttackAt = now + attackPeriodMs` — ein direkt neben dem Spieler
+  respawnendes Monster feuert nicht sofort.
+- Initialer Spawn: deterministisches Raster um die Map-Mitte (alle Monster
+  nahe am Spieler-Spawn, damit sie gekämpft werden), `nextAttackAt` gestaffelt
+  (`FIRST_SHOT_DELAY + i*500ms`).
+- nächster Spieler im Aggro-Radius (z. B. 10 Einheiten) → wenn
+  `now >= nextAttackAt`: `EnemyShoot` bauen, Projektil erzeugen, Spielfeld
+  markieren (Broadcast-Liste), `nextAttackAt = now + attackPeriodMs`.
+
+### 8.2 `Projectile` (Plain Object)
+
+Felder: `ownerId`, `bulletId`, `bulletType=0`, `startX/Y`, `angle`, `damage`,
+`speed` (**Rohwert** `50` — die Einheit ist „Einheiten pro 10 s", Division
+durch 10000 nur in der Positionsformel), `lifetimeMs=3000`, `ageMs`.
+
+```
+pos = start + (ageMs * speed / 10000) * (cos(angle), sin(angle))
+```
+
+`ageMs * speed / 10000` bei Speed `50` und `3000 ms` → `15` Einheiten Reichweite
+(konsistent zur Waffen-Reichweite in §8.3). Kollision vs. Spieler: Distanz
+`pos → player.pos` ≤ `player.radius + 0.6` (Spieler-Radius ~0.5). Treffer →
+`Damage`, entfernen. `ageMs > lifetimeMs` → entfernen (auch ohne Treffer).
+
+### 8.3 Damage-Formel (Client-Ident, `GameObject.damageWithDefense`)
+
+```
+effDef = defense                      // kein ArmorPiercing/Condition in V2
+final  = max(damage * 3 / 20, damage - effDef)
+```
+
+- Spieler→Monster: Energy Staff `0xa97`, `[MinDamage=10, MaxDamage=25]`,
+  `NumProjectiles=2`, Speed `180`, Lifetime `475 ms` → Reichweite
+  `180 * 475 / 10000 ≈ 8.55` Einheiten.
+- Monster→Spieler: Ghost-Mage-Bolt Damage `40`, Defense der Spieler `0` →
+  `max(40*3/20, 40-0) = 40`.
+
+### 8.4 Waffe/Inventar & HP-Regeneration
+
+Der `Player` bekommt beim Spawn die Default-Ausrüstung des Wizard
+(`PlayersCXML`): Slot 0 = Energy Staff `0xa97`, Slot 1 = `0xa2e`, Slot 4 =
+`0xa22`; übrige Slots `-1`. `INVENTORY_0`-Stat im `ObjectStatusData` wird
+entsprechend gesetzt (V1 sendet bisher überall `-1`).
+
+**HP-Regeneration (server-seitig, in `player.simulate`):** Regen ist im
+Client **nicht** lokal implementiert (`vitality_` = `HpRegen` der Klasse, nur
+angezeigt) — der Server treibt sie und sendet die HP-Stat je `NewTick`.
+Wizard-Basis `HpRegen=12` (`PlayersCXML`):
+`hp = min(maxHp, hp + HpRegen * dt)` — bewusste Vereinfachung, macht die Demo
+spielbar, ohne dass drei Ghost-Mage-Treffer (à 40) unvermeidbar töten. `VITALITY`
+-Stat (27) = `HpRegen` mitsenden.
+
+---
+
+## 9. Chatbefehl `/give`
+
+- **Syntax:** `/give <objectType>` — hex (z. B. `/give 0xa07`) oder dezimal.
+- **Weg:** `PlayerText` → SessionActor (syntaktisch: fängt `/`-Zeilen ab) →
+  `PlayerTextMsg(text)` → Realm-Tick.
+- **Wirkung:** erstes freies Inventar-Slot (4–11) mit dem Item belegen; kein
+  Item wenn voll oder unbekannter Type. Inventar-Stat kommt über `NewTick`.
+- **Feedback:** Das eingehende `Text`-Paket (34) ist im Client **nicht**
+  gemappt — Server-Chat wird nicht gerendert. Optionales Feedback über eine
+  **`Notification`** über dem Spieler (`objectId=playerId`, QueuedStatusText):
+  dafür einen im Client vorhandenen TextKey nutzen (die Keys liegen im
+  Language-File, eigene Keys werden nicht aufgelöst) oder ganz auf das
+  sichtbare Item im Inventar setzen. (Einschränkung dokumentiert.)
 
 ---
 
 ## 10. Supervision & Fehler
 
-- **`RealmSupervisor` (ONE_FOR_ONE):** startet ein Realm nach Crash neu;
-  Namens-Wiederverwendung via `spawnReplacing`.
-- **`SessionSupervisor` je Verbindung (Entscheidung, nicht offen):** startet
-  die Session neu; ist die Verbindung tot, wird die Session heruntergefahren
-  statt neu verbunden. Ein Spieler ohne aktive Verbindung existiert in V1
-  nicht.
-- **Entities (Plain Objects):** Fehler in `simulate` werden im Realm-Tick
-  abgefangen; das Entity wird entfernt, der Tick läuft weiter. Kein
-  Supervisor-Aufwand pro Entity.
-- **Netty:** Exceptions pro Verbindung isolieren (`try/catch` im Handler,
-  `channelInactive`-Pfad), nie den Boss-EventLoop killen. Abgelehnte/
-  gekickte Verbindungen (Flood, Idle, IP-Limit) werden sauber geschlossen.
+Unverändert aus V1 (§10): `RealmSupervisor` (ONE_FOR_ONE) startet Realms neu;
+`SessionSupervisor` je Verbindung; **Entities sind Plain Objects** — Fehler in
+`monster.simulate`/Projektil-Kollision werden im Realm-Tick abgefangen, das
+Entity entfernt, der Tick läuft weiter.
 
 ---
 
 ## 11. Projektstruktur (`Gameserver/`)
 
 ```
-Gameserver/pom.xml                      (abhängt von Actor + Netty)
 Gameserver/src/main/java/dev/localsoul/aero/game/
-├── Main.java                            (Entry-Point: Port, Tick-Rate)
-├── GameServer.java                      (Facade: ActorSystem + Netty starten)
-├── net/
-│   ├── NettyServer.java                 (Bootstrap, ChannelInitializer)
-│   ├── PacketDecoder.java               (Frame → IncomingMessage)
-│   ├── PacketEncoder.java               (OutgoingMessage → Frame)
-│   ├── Rc4Cipher.java                   (ARCFOUR, stateful)
-│   ├── NettyClient.java                 (implementiert actor.session.Client,
-│   │                                     send ohne Flush + Backpressure/Kick)
-│   ├── ConnectionLimiter.java           (pro-IP-Limit)
-│   └── FloodGuard.java                  (Pakete/s pro Verbindung)
+├── Main.java · GameServer.java                  (unverändert)
+├── net/                                         (unverändert)
 ├── protocol/
-│   ├── MessageType.java                 (Typ-ID ↔ Paketklasse)
-│   ├── IncomingMessage.java             (Basis, parseFromInput)
-│   ├── OutgoingMessage.java             (Basis, writeToOutput)
-│   ├── Hello.java · Load.java · Move.java · Escape.java
-│   └── MapInfo.java · CreateSuccess.java · Update.java · NewTick.java · Ping.java
+│   ├── MessageType.java                         (um PlayerShoot/EnemyHit/… erweitert)
+│   ├── IncomingMessage/OutgoingMessage.java     (unverändert)
+│   ├── ServerPlayerShoot.java · EnemyShoot.java · Damage.java
+│   ├── Notification.java · Death.java           (neu, out)
+│   ├── PlayerShoot.java · EnemyHit.java · PlayerHit.java · PlayerText.java (neu, in)
+│   └── … bestehende V1-Klassen                   (Hello/Load/Move/MapInfo/…)
 ├── actor/
-│   ├── RoomRegistry.java                 (gameId → Shard-Menge, kein Singleton)
-│   ├── RealmActor.java                   (TickActor, besitzt Map/Entities)
-│   ├── SessionActor.java                 (Session)
-│   ├── RealmSupervisor.java · SessionSupervisor.java
-│   ├── PersistenceActor.java             (V4: Save-Offload, nie im Realm-Tick)
-│   └── messages (records, Datenfluss §7):
-│       PlayerHello · PlayerJoin · PlayerMove · PlayerLeave ·
-│       BackpressureKick · KickConfirmed · MapInfoReady · JoinConfirmed
+│   ├── RealmActor.java                           (erweitert, §7)
+│   ├── SessionActor.java                         (um die 4 neuen In-Pakete erweitert)
+│   ├── GameMessages.java                         (PlayerShootMsg, EnemyHitMsg, PlayerTextMsg)
+│   └── RoomRegistry.java                         (unverändert)
 └── world/
-    ├── Map.java                         (leere Welt: Breite/Höhe, Grund-Typ)
-    ├── Entity.java                      (Plain Object, simulate(dt))
-    └── Player.java                      (Entity + Bewegung/Validierung/Status)
+    ├── Map.java · Entity.java                    (unverändert)
+    ├── Player.java                               (Inventar, Shot-Ringpuffer, Defense, XP)
+    ├── Monster.java                              (neu, §8.1)
+    ├── Projectile.java                           (neu, §8.2)
+    └── LootBag.java                              (neu, Container: objectType + Items)
 ```
 
 ---
 
 ## 12. Roadmap
 
-- [ ] **V1 – Demo:** Modul, Netty (mit Security + Backpressure, s. §5/§6),
-      RC4-Framing, `Hello`/`Load`, leere Welt, Plain-Object-Entities im
-      Realm-Tick, `NewTick`-Broadcast über `InterestSet`, `RoomRegistry` mit
-      einer Instanz pro Raum-Typ (Nexus-Sharding vorbereitet). Client auf
-      `localhost:PORT` spielt.
-- [ ] **V2 – Kampf:** `PlayerShoot`/`EnemyShoot`, Treffer-Validierung,
-      `Damage`, `Notification`, Monster als Entities, XP/Drops.
-- [ ] **V3 – Inhalt:** Map-Import aus Client-Daten (Ground/Object-XML), Reiche
-      mit mehreren Räumen, Portale, `Reconnect`.
-- [ ] **V4 – Persistenz:** Account-Token-Kopplung mit `Server` (HTTP),
-      Charakter-Speicherung über den `PersistenceActor` (nie im Realm-Tick),
-      Vault.
-- [ ] **Skalierung (bei Bedarf):** Mehrere **Nexus-Shards** über die
-      `RoomRegistry` (Last-verteilt), mehrere Realms pro Prozess,
-      `InterestSet`-Parameter justieren; ggf. mehrere Gameserver-Prozesse
-      hinter einem Load-Balancer.
+- [x] **V1 – Demo:** Netty (Security + Backpressure), RC4-Framing, leere Welt,
+      Bewegung, Multiplayer-Sichtbarkeit.
+- [x] **V2 – Kampf:** `PlayerShoot`/`EnemyHit` (validiert), `EnemyShoot` +
+      Server-Projektilsimulation, `Damage`, `Death`, XP/Level,
+      Soulbound Loot Bags (Nähe-Pickup, Lebensdauer), Monster-Respawn,
+      `/give`. **46 Tests grün** (davon 35 neu in V2).
+- [ ] **V3 – Inhalt:** Map-Import, Reiche mit mehreren Räumen, Portale,
+      `Reconnect`, `Escape`-Ziel.
+- [ ] **V4 – Persistenz:** Account-Token-Kopplung mit `Server`, Charakter-
+      Speicherung über den `PersistenceActor`, Vault.
+- [ ] **Skalierung (bei Bedarf):** Nexus-Shards über die `RoomRegistry`.
 
 ---
 
 ## 13. Verifikation
 
 - **Build:** `mvn -pl Gameserver -am install`
-- **Starten:** `java -cp Gameserver/target/classes:Actor/target/classes:<netty-jars> dev.localsoul.aero.game.Main <port>`
-- **Client:** Flash-Client (27.7.X2, `LocalhostServerModel`) auf
-  `localhost:<port>`; Erscheinen + Bewegung sichtbar.
-- **Automatisiert (V1):**
-  - Unit: `Rc4CipherTest` (bekannte Klartext→Chiffre-Vektoren),
-    `PacketDecoderTest`/`PacketEncoderTest` (Roundtrip inkl. RC4),
-    `MessageTypeTest` (ID↔Klasse eindeutig).
-  - `ConnectionLimiterTest` (eigener Unit-Test): Zähler kehrt nach **jedem**
-    Exit-Pfad auf 0 zurück — `channelInactive`, `exceptionCaught`, Flood-/
-    Idle-Kick, abgelehnte Verbindung. Kein Zähler-Leak (sonst werden IPs
-    fälschlich gesperrt).
-  - Security: `maxFrameLength`-Überschreitung → Verbindung wird geschlossen;
-    Idle-Timeout → Close; FloodGuard → Kick; pro-IP-Limit → Ablehnung.
-  - Backpressure: Client mit vollem/`!writable`-Kanal wird gekickt, andere
-    Spieler im Reich bekommen weiterhin Ticks. **Kick-Pfad-Test:** prüft die
-    Reihenfolge `BackpressureKick → KickPlayer → (Entity entfernt) →
-    KickConfirmed → channel.close()` — die Entity-Map wird genau einmal (im
-    Realm) mutiert, kein Schreiben an einen toten Channel.
-  - **Join-Pfad-Test:** `Hello` → `MapInfoReady` (MapInfo) → Client `Load` →
-    `JoinConfirmed(objectId, update, createSuccess)` — Reihenfolge
-    `MapInfo → Update → CreateSuccess` garantiert, `objectId` kommt aus dem
-    Realm und wird der Session über den Ack übergeben (keine zweite Stelle
-    vergibt IDs).
-  - Integration: Fake-Client über eine `Socket`, die das Frame-Format spricht;
-    prüft `MapInfo → CreateSuccess → NewTick`-Reihenfolge und Bewegung;
-    Sichtbarkeit via `InterestSet` (zwei Spieler außerhalb des Radius sehen
-    sich nicht).
-  - `RoomRegistryTest`: `gameId` → Instanz(en); zweiter Nexus-Shard kann ohne
-    Struktur-Änderung dazukommen.
-- **Konventionen:** deutsch kommentieren; `final`-Parameter (Server-Stil);
-  unveränderliche `record`-Nachrichten; neue Race-Pfade → Stress-Test.
+- **Start:** `java -cp "Gameserver/target/classes:Actor/target/classes:$(cat
+  <netty-cp>)" dev.localsoul.aero.game.Main <port>`
+- **Client:** Flash-Client (27.7.X2, `LocalhostServerModel`); Killerfahrung:
+  Monster spawnen, schießen, sterben; XP/Loot; `/give` füllt das Inventar.
+- **Automatisiert:**
+  - `PlayerShootTest`/`EnemyHitTest` — Schuss-Spur → Treffervalidierung
+    (gültig/ungültig: außer Reichweite, fremde bulletId, totes Ziel),
+    **bulletId-Wraparound (255 → 0)** wird noch als gültiger Schuss erkannt,
+    **doppelter `EnemyHit` auf dieselbe bulletId** wird verworfen.
+  - `ProjectileSimulationTest` — Bewegung (`pos = start + age*speed/10000`),
+    Kollision, Ablauf (Lifetime), **Projektil trifft zwei Spieler im selben
+    Tick → nur der erste bekommt `Damage`**.
+  - `DamageFormulaTest` — `max(dmg*3/20, dmg-defense)` gegen Client-Fälle.
+  - `MonsterAITest` — Feuert nur im Aggro-Radius und mit `attackPeriod`;
+    **Monster, das im selben Tick stirbt, feuert nicht mehr** (Kill im
+    Inbox-Drain vor der AI).
+  - `DeathTest` — **Spieler stirbt und ein weiteres Projektil trifft ihn im
+    selben Tick → kein zweites `Death`**, kein `Damage` an Tote.
+  - `CombatFlowTest` (Integration über Fake-Socket): Kill eines Monsters →
+    `Update.drops` (via Diff) + XP-`Notification` + Loot-Bag; Spieler-Tod →
+    `Death`.
+  - `LootBagTest` — Nähe-Pickup füllt Inventar (nur Eigentümer), volle
+    Inventare bleiben liegen, **`BAG_LIFETIME_MS`-Despawn** ohne Eigentümer.
+  - `VisibilityDiffTest` — Neuankömmling sieht bestehende Monster/Bags
+    (`newObjs`); Monster/Bag verlässt den Radius → `drops`; **kein Doppel-Drop**
+    (Kill-Despawn + Diff greifen nicht beide); Respawn mit neuer objectId →
+    erneutes `newObjs`.
+  - `KillWithoutOwnerTest` — Killer verlässt im selben Drain (oder stirbt):
+    kein Absturz, **kein XP, keine Bag**.
+  - `PlayerRegenTest` — `hp` steigt in `simulate` um `HpRegen*dt`, gedeckelt
+    auf `maxHp`; `VITALITY`-Stat wird gesendet.
+  - `RespawnGraceTest` — respawntes Monster feuert nicht sofort
+    (`nextAttackAt = now + attackPeriodMs`).
+  - `GiveCommandTest` — `/give 0xa07` belegt freies Slot, unbekannter Type
+    wirkungslos, volles Inventar wirkungslos.
+  - `RealmPerfTest` — **500 Monster**: Tick-Zeit und `NewTick`-Bau bleiben
+    im Rahmen (Leistungsgrenze des O(Spieler × Monster)-Scans vor V3 kennen).
+  - Bestehende V1-Tests bleiben grün (Interest/Join/Move/Kick).
 
 ---
 
 ## 14. Offene Punkte (bei Implementierung zu klären)
 
-- **Message-ID-Tabelle und Feldreihenfolgen der Datenklassen vollständig per
-  Skript aus dem Client extrahieren, bevor der erste Codec-Test läuft** — kein
-  manuelles Abtippen (Off-by-one-Risiko in `ObjectStatusData`).
-- Netty-Version + exakte Artefakte festlegen (`netty-transport`, `-codec`,
-  `-handler`; Epoll/NIO je nach Plattform).
-- Tick-Rate final (20 Hz Default) und ob `Ping`/`Pong` in V1 mitlaufen.
-- Batching-/Backpressure-Parameter (Outbound-Queue-Limit, Writability-Schwelle,
-  Kick-Schwellen in Ticks) ausmessen.
+- **Aggro-/Feuer-Parameter** (`attackPeriodMs=2000`, Aggro-Radius 10,
+  `PICKUP_RADIUS=1.0`, `RESPAWN_MS=10 000`, `BAG_LIFETIME_MS=60 000`,
+  Regen `HpRegen*dt`) im Realbetrieb nachmessen.
+- **EnemyHit-Validierungsstärke:** Schuss-Spur-Ringpuffer (modulo 256,
+  Verbrauchs-Markierung) ist bewusst sanft; ein harter Anti-Cheat
+  (Zeit/`time`-Feld, Winkelkegel) ist V3+.
+- **Ringpuffer-Größe** (Anzahl Schüsse je Spieler) und
+  **Reichweiten-Toleranz** beim `EnemyHit` ausmessen — letztere wird nötig,
+  sobald Monster sich bewegen (V3; V2 stehen sie still, Position beim
+  `EnemyHit` reicht).
+- **Sichtbarkeits-Diff:** `Set`-Pflege je Spieler ist O(visible) pro Tick;
+  die O(Spieler × Monster)-Grenze steckt im Scan (s. `RealmPerfTest`) — bei
+  großen Welten echte Spatialstruktur (V3).
+- **Kollisionsradius** der Projektile: konstanter Hit-Radius vs. exakte
+  Client-Mathe (`size/200` je Objekt) — V3-Feinschliff.
+- **Bag-Eigentum optisch:** `OWNER_ACCOUNT_ID`-Stat für den Client, sobald es
+  ein Account-System gibt (V4).

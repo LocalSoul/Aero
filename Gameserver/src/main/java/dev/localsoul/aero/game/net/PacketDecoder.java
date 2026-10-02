@@ -1,12 +1,16 @@
 package dev.localsoul.aero.game.net;
 
 import dev.localsoul.aero.game.protocol.Create;
+import dev.localsoul.aero.game.protocol.EnemyHit;
 import dev.localsoul.aero.game.protocol.Escape;
 import dev.localsoul.aero.game.protocol.Hello;
 import dev.localsoul.aero.game.protocol.IncomingMessage;
 import dev.localsoul.aero.game.protocol.Load;
 import dev.localsoul.aero.game.protocol.MessageType;
 import dev.localsoul.aero.game.protocol.Move;
+import dev.localsoul.aero.game.protocol.PlayerHit;
+import dev.localsoul.aero.game.protocol.PlayerShoot;
+import dev.localsoul.aero.game.protocol.PlayerText;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelHandlerContext;
@@ -47,7 +51,11 @@ public final class PacketDecoder extends ByteToMessageDecoder {
             case CREATE -> new Create();
             case MOVE -> new Move();
             case ESCAPE -> new Escape();
-            // Akzeptierte, aber in V1 nicht verarbeitete Pakete (Acks usw.):
+            case PLAYERSHOOT -> new PlayerShoot();
+            case ENEMYHIT -> new EnemyHit();
+            case PLAYERHIT -> new PlayerHit();
+            case PLAYERTEXT -> new PlayerText();
+            // Akzeptierte, aber nicht verarbeitete Pakete (Acks usw.):
             default -> null;
         };
     }

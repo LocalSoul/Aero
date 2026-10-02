@@ -21,6 +21,7 @@ public final class GameServer implements AutoCloseable {
 
     public static final int NEXUS_GAME_ID = 0;
     public static final int DEFAULT_PORT = 2050;
+    public static final int INITIAL_MONSTERS = 6;
 
     private final ActorSystem system;
     private final TickDriver driver;
@@ -32,7 +33,7 @@ public final class GameServer implements AutoCloseable {
 
         final RoomRegistry rooms = new RoomRegistry();
         final Map nexusMap = new Map(50, 50);
-        final ActorRef nexus = system.spawn(new RealmActor("nexus", driver, nexusMap));
+        final ActorRef nexus = system.spawn(new RealmActor("nexus", driver, nexusMap, INITIAL_MONSTERS));
         rooms.register(NEXUS_GAME_ID, nexus);
 
         final ConnectionLimiter limiter = new ConnectionLimiter(5);
